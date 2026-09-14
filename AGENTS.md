@@ -11,12 +11,19 @@ raw ones, standard library only.
 - `gofmt -l .` — must print nothing.
 - `go build -o fluxctl . && install -m755 fluxctl ~/.local/bin/` — how it is installed today.
 
-## Status
+## Releasing
 
-Private repository, hand-installed into `~/.local/bin`. When it goes public it gets the spotctl
-release path (GitHub release, NUR package, installed through dotfiles) and the skill is picked up
-by `coding-agent-skills.nix` in dotfiles the way `spotify` is. Until then the skill is only
-available from this checkout.
+Bump `version` in `main.go` in a `chore: release vX.Y.Z` commit, then push an annotated tag.
+`.github/workflows/release.yml` publishes the GitHub release and dispatches the updater in
+`samirettali/nur` scoped to this package; the rules in spotctl's AGENTS.md apply unchanged
+(the release matters, not the tag; the tag must sit on a commit that has the workflow; the
+dispatch uses `NUR_DISPATCH_TOKEN` declared in `infra`). No Go dependencies, so `vendorHash`
+is null in the NUR package and adding one would break the automatic bump.
+
+The skill is consumed by dotfiles (`coding-agent-skills.nix`) through a `flake = false`
+input on this repository, the way `spotify` is.
+
+## Status
 
 Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category management
 (create, move, delete, refresh, OPML) is deliberately left for later.
