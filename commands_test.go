@@ -1,0 +1,108 @@
+package main
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestParseTime(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in   string
+		want int64
+		err  bool
+	}{
+		{"", 0, false},
+		{"24h", now.Add(-24 * time.Hour).Unix(), false},
+		{"7d", now.Add(-7 * 24 * time.Hour).Unix(), false},
+		{"2w", now.Add(-14 * 24 * time.Hour).Unix(), false},
+		{"2026-09-13T10:00:00Z", time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC).Unix(), false},
+		{"yesterday", 0, true},
+		{"-1h", 0, true},
+	}
+	for _, tc := range cases {
+		got, err := parseTime(tc.in, now)
+		if (err != nil) != tc.err {
+			t.Fatalf("parseTime(%q) error = %v, want error %v", tc.in, err, tc.err)
+		}
+		if got != tc.want {
+			t.Fatalf("parseTime(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestEntryListQuery(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	o := entryListOptions{status: "unread", starred: true, feedID: 7, categoryID: 3, since: "1d",
+		search: "kafka", limit: 20, offset: 40, order: "published_at", direction: "desc"}
+	q, err := o.query(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"status": "unread", "starred": "true", "feed_id": "7", "category_id": "3",
+		"after": strconv.FormatInt(now.Add(-24*time.Hour).Unix(), 10), "search": "kafka", "limit": "20", "offset": "40",
+		"order": "published_at", "direction": "desc",
+	}
+	for key, value := range want {
+		if q.Get(key) != value {
+			t.Errorf("%s = %q, want %q", key, q.Get(key), value)
+		}
+	}
+	if q.Has("before") {
+		t.Error("before should be absent when --until is empty")
+	}
+
+	all := entryListOptions{status: "all", order: "id", direction: "asc"}
+	q, err = all.query(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Has("status") || q.Has("limit") {
+		t.Errorf("status all with no limit should send neither: %v", q)
+	}
+
+	for _, bad := range []entryListOptions{
+		{status: "nope", order: "id", direction: "asc"},
+		{status: "unread", order: "created_at", direction: "asc"},
+		{status: "unread", order: "id", direction: "up"},
+		{status: "unread", order: "id", direction: "asc", limit: -1},
+		{status: "unread", order: "id", direction: "asc", since: "soon"},
+	} {
+		if _, err := bad.query(now); err == nil {
+			t.Errorf("expected an error for %+v", bad)
+		}
+	}
+}
+
+func TestParseFlagsInterspersed(t *testing.T) {
+	fs := newFlagSet("x")
+	full := fs.Bool("full", false, "")
+	if err := parseFlags(fs, []string{"42", "--full", "43"}); err != nil {
+		t.Fatal(err)
+	}
+	if !*full {
+		t.Error("--full after a positional was ignored")
+	}
+	if got := strings.Join(fs.Args(), ","); got != "42,43" {
+		t.Errorf("positionals = %q, want 42,43", got)
+	}
+}
+
+func TestParseIDs(t *testing.T) {
+	if _, err := parseIDs("x", nil); err == nil {
+		t.Error("no IDs should fail")
+	}
+	if _, err := parseIDs("x", []string{"1", "abc"}); err == nil {
+		t.Error("non-numeric ID should fail")
+	}
+	if _, err := parseIDs("x", []string{"0"}); err == nil {
+		t.Error("zero ID should fail")
+	}
+	ids, err := parseIDs("x", []string{"1", "2"})
+	if err != nil || len(ids) != 2 || ids[1] != 2 {
+		t.Errorf("parseIDs = %v, %v", ids, err)
+	}
+}
