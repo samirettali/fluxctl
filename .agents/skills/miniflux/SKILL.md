@@ -16,10 +16,10 @@ The envelope is Miniflux's own: feeds and categories are arrays, entries are `{"
 category  {id, title, feed_count, total_unread}
 feed      {id, title, site_url, feed_url, category:{id,title}, checked_at, disabled, parsing_error?}
 entry     {id, title, url, author?, published_at, created_at, status, starred, reading_time,
-           feed:{id,title}, category:{id,title}, tags?, content?}
+           feed:{id,title}, category:{id,title}, enclosures?:[{url, mime_type}], tags?, content?}
 ```
 
-`--full` returns Miniflux's objects verbatim, about ten times the size. Do not use it unless the trimmed object lacks a field the task needs.
+`enclosures` is where a podcast episode or a YouTube video lives; `url` is the page. `--full` on `category list`, `feed list|get` and `entry list|get` returns Miniflux's objects verbatim, about ten times the size. Do not use it unless the trimmed object lacks a field the task needs.
 
 ## Authentication
 
@@ -42,7 +42,7 @@ fluxctl entry list --since 7d --category 9 --limit 0
 fluxctl entry list --since 2d --feed 703
 ```
 
-`--since`/`--until` take `24h`, `7d`, `2w` or an RFC 3339 timestamp and filter on when Miniflux fetched the entry, not on `published_at`, so they are the right tool for "since yesterday". `entry list` is unread-only by default, ordered by `published_at desc`, 50 per page; `--limit 0` returns everything, `--status all` includes read entries, `--starred` keeps only starred ones.
+`--since`/`--until` take `24h`, `7d`, `2w` or an RFC 3339 timestamp and filter on when the entry last changed. For unread entries that is when Miniflux fetched them, which is what "since yesterday" means and is safe against feeds with bogus publication dates; with `--status all` an old entry that was just read or starred also matches. `--published-since`/`--published-until` filter on the publication date instead. `entry list` is unread-only by default, ordered by `published_at desc`, 50 per page; `--order created_at` sorts by arrival, `--limit 0` returns everything (pages are capped at 1000 by the server), `--status all` includes read entries, `--starred` keeps only starred ones.
 
 `total` is the count for the whole filter, not the page. With several hundred entries, group by `category.title` and `feed.title` and summarize per group rather than listing each item.
 
@@ -55,7 +55,7 @@ fluxctl entry fetch 140084              # ask Miniflux to download the full page
 fluxctl entry list --since 24h --category 9 --limit 0 --content   # content of every entry, costly
 ```
 
-`entry fetch` fails with a 500 when the page is gone; fall back to the URL in the entry.
+`entry fetch` answers `{"id", "content", "reading_time"}` and fails with a 500 when the page is gone; fall back to the URL in the entry.
 
 ## Search
 
@@ -76,12 +76,12 @@ fluxctl entry unstar 140084
 fluxctl entry save 140084               # send to the integration configured in Miniflux (linkding)
 ```
 
-`star`/`unstar`/`save` answer `{"changed"|"saved", "skipped", "failed": [{"id", "error"}]}` and go on past a failure; report `failed` whenever it is non-empty. `read`/`unread` answer `{"status", "entries"}`.
+`star`/`unstar` answer `{"starred", "changed", "skipped", "failed": [{"id", "error"}]}`, `save` answers `{"saved", "failed"}`; both go on past a per-entry failure, so report `failed` whenever it is non-empty. `saved` means Miniflux accepted the entry and is sending it in the background: a failure on the linkding side never comes back, so confirm with the linkding skill when it matters. `read`/`unread` answer `{"status", "entries"}`.
 
 ## Operating rules
 
 - Only mutate when asked. A recap does not mark anything read; a "flag the important ones" request stars, it does not save, unless the user says so.
 - Report entries with title, feed and URL, never bare IDs. Keep the IDs at hand for the follow-up action.
-- On a 404, re-check the ID: entries the user removed are gone from the API.
+- On a 404, re-check the ID before retrying.
 - `feed list` shows `parsing_error` on feeds Miniflux cannot fetch; mention them only when the user asks about feed health.
 - Never print the API key.

@@ -9,7 +9,9 @@ import (
 // {"total", "entries"} for entries) and only slim the objects inside: raw entries carry the
 // whole feed object plus the HTML content, which is most of the bytes an agent pays for.
 
-type rawCategory struct {
+// category is both the wire shape and the trimmed one: Miniflux's category object is
+// already small, so decoding into this struct drops only user_id and hide_globally.
+type category struct {
 	ID          int64  `json:"id"`
 	Title       string `json:"title"`
 	FeedCount   *int   `json:"feed_count,omitempty"`
@@ -17,31 +19,37 @@ type rawCategory struct {
 }
 
 type rawFeed struct {
-	ID                  int64       `json:"id"`
-	Title               string      `json:"title"`
-	SiteURL             string      `json:"site_url"`
-	FeedURL             string      `json:"feed_url"`
-	CheckedAt           string      `json:"checked_at"`
-	Disabled            bool        `json:"disabled"`
-	ParsingErrorCount   int         `json:"parsing_error_count"`
-	ParsingErrorMessage string      `json:"parsing_error_message"`
-	Category            rawCategory `json:"category"`
+	ID                  int64    `json:"id"`
+	Title               string   `json:"title"`
+	SiteURL             string   `json:"site_url"`
+	FeedURL             string   `json:"feed_url"`
+	CheckedAt           string   `json:"checked_at"`
+	Disabled            bool     `json:"disabled"`
+	ParsingErrorCount   int      `json:"parsing_error_count"`
+	ParsingErrorMessage string   `json:"parsing_error_message"`
+	Category            category `json:"category"`
+}
+
+type rawEnclosure struct {
+	URL      string `json:"url"`
+	MimeType string `json:"mime_type"`
 }
 
 type rawEntry struct {
-	ID          int64    `json:"id"`
-	FeedID      int64    `json:"feed_id"`
-	Status      string   `json:"status"`
-	Title       string   `json:"title"`
-	URL         string   `json:"url"`
-	Author      string   `json:"author"`
-	PublishedAt string   `json:"published_at"`
-	CreatedAt   string   `json:"created_at"`
-	Content     string   `json:"content"`
-	Starred     bool     `json:"starred"`
-	ReadingTime int      `json:"reading_time"`
-	Feed        rawFeed  `json:"feed"`
-	Tags        []string `json:"tags"`
+	ID          int64          `json:"id"`
+	FeedID      int64          `json:"feed_id"`
+	Status      string         `json:"status"`
+	Title       string         `json:"title"`
+	URL         string         `json:"url"`
+	Author      string         `json:"author"`
+	PublishedAt string         `json:"published_at"`
+	CreatedAt   string         `json:"created_at"`
+	Content     string         `json:"content"`
+	Starred     bool           `json:"starred"`
+	ReadingTime int            `json:"reading_time"`
+	Feed        rawFeed        `json:"feed"`
+	Enclosures  []rawEnclosure `json:"enclosures"`
+	Tags        []string       `json:"tags"`
 }
 
 type rawEntries struct {
@@ -52,13 +60,6 @@ type rawEntries struct {
 type namedRef struct {
 	ID    int64  `json:"id"`
 	Title string `json:"title"`
-}
-
-type category struct {
-	ID          int64  `json:"id"`
-	Title       string `json:"title"`
-	FeedCount   *int   `json:"feed_count,omitempty"`
-	TotalUnread *int   `json:"total_unread,omitempty"`
 }
 
 type feed struct {
@@ -73,28 +74,32 @@ type feed struct {
 }
 
 type entry struct {
-	ID          int64    `json:"id"`
-	Title       string   `json:"title"`
-	URL         string   `json:"url"`
-	Author      string   `json:"author,omitempty"`
-	PublishedAt string   `json:"published_at"`
-	CreatedAt   string   `json:"created_at"`
-	Status      string   `json:"status"`
-	Starred     bool     `json:"starred"`
-	ReadingTime int      `json:"reading_time"`
-	Feed        namedRef `json:"feed"`
-	Category    namedRef `json:"category"`
-	Tags        []string `json:"tags,omitempty"`
-	Content     *string  `json:"content,omitempty"`
+	ID          int64       `json:"id"`
+	Title       string      `json:"title"`
+	URL         string      `json:"url"`
+	Author      string      `json:"author,omitempty"`
+	PublishedAt string      `json:"published_at"`
+	CreatedAt   string      `json:"created_at"`
+	Status      string      `json:"status"`
+	Starred     bool        `json:"starred"`
+	ReadingTime int         `json:"reading_time"`
+	Feed        namedRef    `json:"feed"`
+	Category    namedRef    `json:"category"`
+	Enclosures  []enclosure `json:"enclosures,omitempty"`
+	Tags        []string    `json:"tags,omitempty"`
+	Content     *string     `json:"content,omitempty"`
+}
+
+// enclosure is how a podcast episode or a video reaches the agent: the entry URL is often
+// the page, the enclosure the media itself.
+type enclosure struct {
+	URL      string `json:"url"`
+	MimeType string `json:"mime_type"`
 }
 
 type entries struct {
 	Total   int     `json:"total"`
 	Entries []entry `json:"entries"`
-}
-
-func trimCategory(raw rawCategory) category {
-	return category{ID: raw.ID, Title: raw.Title, FeedCount: raw.FeedCount, TotalUnread: raw.TotalUnread}
 }
 
 func trimFeed(raw rawFeed) feed {
@@ -129,6 +134,9 @@ func trimEntry(raw rawEntry, contentMode string) entry {
 		Category:    namedRef{ID: raw.Feed.Category.ID, Title: raw.Feed.Category.Title},
 		Tags:        raw.Tags,
 	}
+	for _, enc := range raw.Enclosures {
+		e.Enclosures = append(e.Enclosures, enclosure{URL: enc.URL, MimeType: enc.MimeType})
+	}
 	switch contentMode {
 	case "text":
 		text := htmlToText(raw.Content)
@@ -141,15 +149,11 @@ func trimEntry(raw rawEntry, contentMode string) entry {
 }
 
 func decodeCategories(data json.RawMessage) ([]category, error) {
-	var raw []rawCategory
-	if err := json.Unmarshal(data, &raw); err != nil {
+	categories := []category{}
+	if err := json.Unmarshal(data, &categories); err != nil {
 		return nil, fmt.Errorf("decoding categories: %w", err)
 	}
-	out := make([]category, 0, len(raw))
-	for _, c := range raw {
-		out = append(out, trimCategory(c))
-	}
-	return out, nil
+	return categories, nil
 }
 
 func decodeFeeds(data json.RawMessage) ([]feed, error) {

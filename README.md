@@ -27,9 +27,9 @@ fluxctl category list
 fluxctl feed list [--category ID]
 fluxctl feed get ID
 fluxctl feed counters
-fluxctl entry list [--status unread|read|removed|all] [--starred] [--feed ID] [--category ID]
-                   [--since 24h|7d|2w|RFC3339] [--until ...] [--search QUERY]
-                   [--limit N] [--offset N] [--order FIELD] [--direction asc|desc] [--content]
+fluxctl entry list [--status unread|read|all] [--starred] [--feed ID] [--category ID]
+                   [--since 24h|7d|2w|RFC3339] [--until ...] [--published-since ...] [--published-until ...]
+                   [--search QUERY] [--limit N] [--offset N] [--order FIELD] [--direction asc|desc] [--content]
 fluxctl entry get ID [--html]
 fluxctl entry fetch ID [--html]
 fluxctl entry read ID...
@@ -39,6 +39,6 @@ fluxctl entry unstar ID...
 fluxctl entry save ID...
 ```
 
-Every read command takes `--full` to get Miniflux's own objects instead of the trimmed ones. `entry list` omits content unless `--content` is passed; `entry get` and `entry fetch` return it as plain text, or as HTML with `--html`.
+`category list`, `feed list`, `feed get`, `entry list` and `entry get` take `--full` to get Miniflux's own objects instead of the trimmed ones. `entry list` omits content unless `--content` is passed; `entry get` and `entry fetch` return it as plain text, or as HTML with `--html`. `--since`/`--until` filter on when the entry last changed (arrival time for unread entries), `--published-since`/`--published-until` on the publication date. `--limit 0` returns everything; the server caps a page at 1000.
 
 The agent skill lives in `.agents/skills/miniflux`.

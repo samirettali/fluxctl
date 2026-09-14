@@ -24,6 +24,9 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return errHelp
+			}
 			return fmt.Errorf("%s: %w", fs.Name(), err)
 		}
 		rest := fs.Args()
@@ -35,6 +38,9 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 	}
 	return fs.Parse(positional)
 }
+
+// errHelp is returned when a subcommand gets -h/--help; main prints the usage and exits 0.
+var errHelp = errors.New("help requested")
 
 func parseIDs(name string, args []string) ([]int64, error) {
 	if len(args) == 0 {
@@ -179,8 +185,11 @@ func runFeed(args []string) error {
 	}
 }
 
-var validStatuses = map[string]bool{"unread": true, "read": true, "removed": true, "all": true}
-var validOrders = map[string]bool{"id": true, "status": true, "published_at": true, "category_title": true, "category_id": true}
+const maxEntryLimit = 1000 // Miniflux rejects anything above this with a 400.
+
+var validStatuses = map[string]bool{"unread": true, "read": true, "all": true}
+var validOrders = map[string]bool{"id": true, "status": true, "published_at": true, "created_at": true, "changed_at": true,
+	"category_title": true, "category_id": true, "title": true, "author": true}
 
 // parseTime accepts a relative duration ("24h", "7d", "2w") or an RFC 3339 timestamp and
 // returns a Unix timestamp, which is what Miniflux's before/after filters take.
@@ -217,31 +226,41 @@ func parseDuration(value string) (time.Duration, error) {
 }
 
 type entryListOptions struct {
-	status     string
-	starred    bool
-	feedID     int64
-	categoryID int64
-	since      string
-	until      string
-	search     string
-	limit      int
-	offset     int
-	order      string
-	direction  string
+	status         string
+	starred        bool
+	feedID         int64
+	categoryID     int64
+	since          string
+	until          string
+	publishedSince string
+	publishedUntil string
+	search         string
+	limit          int
+	offset         int
+	order          string
+	direction      string
+}
+
+// timeFilter binds a flag value to the Miniflux query parameter it feeds.
+type timeFilter struct {
+	flag, param, value string
 }
 
 func (o entryListOptions) query(now time.Time) (url.Values, error) {
 	if !validStatuses[o.status] {
-		return nil, fmt.Errorf("entry list: invalid --status %q (unread, read, removed, all)", o.status)
+		return nil, fmt.Errorf("entry list: invalid --status %q (unread, read, all)", o.status)
 	}
 	if !validOrders[o.order] {
-		return nil, fmt.Errorf("entry list: invalid --order %q (id, status, published_at, category_title, category_id)", o.order)
+		return nil, fmt.Errorf("entry list: invalid --order %q (id, status, published_at, created_at, changed_at, category_title, category_id, title, author)", o.order)
 	}
 	if o.direction != "asc" && o.direction != "desc" {
 		return nil, fmt.Errorf("entry list: invalid --direction %q (asc, desc)", o.direction)
 	}
 	if o.limit < 0 || o.offset < 0 {
 		return nil, errors.New("entry list: --limit and --offset must be >= 0")
+	}
+	if o.limit > maxEntryLimit {
+		return nil, fmt.Errorf("entry list: --limit must be <= %d, or 0 for everything", maxEntryLimit)
 	}
 	q := url.Values{}
 	if o.status != "all" {
@@ -259,23 +278,22 @@ func (o entryListOptions) query(now time.Time) (url.Values, error) {
 	if o.search != "" {
 		q.Set("search", o.search)
 	}
-	after, err := parseTime(o.since, now)
-	if err != nil {
-		return nil, fmt.Errorf("entry list --since: %w", err)
+	for _, f := range []timeFilter{
+		{"--since", "changed_after", o.since},
+		{"--until", "changed_before", o.until},
+		{"--published-since", "published_after", o.publishedSince},
+		{"--published-until", "published_before", o.publishedUntil},
+	} {
+		ts, err := parseTime(f.value, now)
+		if err != nil {
+			return nil, fmt.Errorf("entry list %s: %w", f.flag, err)
+		}
+		if ts > 0 {
+			q.Set(f.param, strconv.FormatInt(ts, 10))
+		}
 	}
-	if after > 0 {
-		q.Set("after", strconv.FormatInt(after, 10))
-	}
-	before, err := parseTime(o.until, now)
-	if err != nil {
-		return nil, fmt.Errorf("entry list --until: %w", err)
-	}
-	if before > 0 {
-		q.Set("before", strconv.FormatInt(before, 10))
-	}
-	if o.limit > 0 {
-		q.Set("limit", strconv.Itoa(o.limit))
-	}
+	// Miniflux defaults to 100 when limit is absent; an explicit 0 removes the cap.
+	q.Set("limit", strconv.Itoa(o.limit))
 	if o.offset > 0 {
 		q.Set("offset", strconv.Itoa(o.offset))
 	}
@@ -313,16 +331,18 @@ func runEntry(args []string) error {
 func runEntryList(args []string) error {
 	fs := newFlagSet("entry list")
 	var o entryListOptions
-	fs.StringVar(&o.status, "status", "unread", "unread, read, removed or all")
+	fs.StringVar(&o.status, "status", "unread", "unread, read or all")
 	fs.BoolVar(&o.starred, "starred", false, "only starred entries")
 	fs.Int64Var(&o.feedID, "feed", 0, "only entries of this feed")
 	fs.Int64Var(&o.categoryID, "category", 0, "only entries in this category")
-	fs.StringVar(&o.since, "since", "", "entries fetched after this duration ago or RFC 3339 time")
-	fs.StringVar(&o.until, "until", "", "entries fetched before this duration ago or RFC 3339 time")
+	fs.StringVar(&o.since, "since", "", "entries changed after this duration ago or RFC 3339 time")
+	fs.StringVar(&o.until, "until", "", "entries changed before this duration ago or RFC 3339 time")
+	fs.StringVar(&o.publishedSince, "published-since", "", "entries published after this duration ago or RFC 3339 time")
+	fs.StringVar(&o.publishedUntil, "published-until", "", "entries published before this duration ago or RFC 3339 time")
 	fs.StringVar(&o.search, "search", "", "full-text search")
 	fs.IntVar(&o.limit, "limit", 50, "page size, 0 for everything")
 	fs.IntVar(&o.offset, "offset", 0, "page offset")
-	fs.StringVar(&o.order, "order", "published_at", "id, status, published_at, category_title or category_id")
+	fs.StringVar(&o.order, "order", "published_at", "id, status, published_at, created_at, changed_at, category_title, category_id, title or author")
 	fs.StringVar(&o.direction, "direction", "desc", "asc or desc")
 	content := fs.Bool("content", false, "include the content of each entry as plain text")
 	full := fs.Bool("full", false, "return Miniflux's own objects")
@@ -395,7 +415,7 @@ func runEntryGet(args []string) error {
 }
 
 // runEntryFetch asks Miniflux to download the original page, for feeds that only ship a
-// summary. The answer is {"content": ...}, kept as is except for the HTML flattening.
+// summary. The answer is {"id", "content", "reading_time"} in both text and HTML mode.
 func runEntryFetch(args []string) error {
 	fs := newFlagSet("entry fetch")
 	asHTML := fs.Bool("html", false, "keep the content as HTML instead of plain text")
@@ -417,16 +437,17 @@ func runEntryFetch(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *asHTML {
-		return writeJSON(data)
-	}
 	var body struct {
-		Content string `json:"content"`
+		Content     string `json:"content"`
+		ReadingTime int    `json:"reading_time"`
 	}
 	if err := decodeInto(data, &body, "fetched content"); err != nil {
 		return err
 	}
-	return writeJSON(map[string]any{"id": ids[0], "content": htmlToText(body.Content)})
+	if !*asHTML {
+		body.Content = htmlToText(body.Content)
+	}
+	return writeJSON(map[string]any{"id": ids[0], "content": body.Content, "reading_time": body.ReadingTime})
 }
 
 func runEntryStatus(status string, args []string) error {
@@ -449,6 +470,18 @@ func runEntryStatus(status string, args []string) error {
 	return writeJSON(map[string]any{"status": status, "entries": ids})
 }
 
+type starResult struct {
+	Starred bool          `json:"starred"`
+	Changed []int64       `json:"changed"`
+	Skipped []int64       `json:"skipped"`
+	Failed  []failedEntry `json:"failed"`
+}
+
+type failedEntry struct {
+	ID    int64  `json:"id"`
+	Error string `json:"error"`
+}
+
 // runEntryStar is idempotent even though Miniflux only exposes a toggle: it reads each
 // entry first and flips only the ones that are not already in the requested state.
 func runEntryStar(star bool, args []string) error {
@@ -468,35 +501,57 @@ func runEntryStar(star bool, args []string) error {
 	if err != nil {
 		return err
 	}
-	changed, skipped := []int64{}, []int64{}
-	failed := []map[string]any{}
+	result, err := starEntries(client, star, ids)
+	if err != nil {
+		return err
+	}
+	return writeJSON(result)
+}
+
+// starEntries collects per-entry failures instead of aborting, except for an authError:
+// a rejected key fails every entry the same way and the caller needs the fix, not a list.
+func starEntries(client *minifluxClient, star bool, ids []int64) (starResult, error) {
+	result := starResult{Starred: star, Changed: []int64{}, Skipped: []int64{}, Failed: []failedEntry{}}
 	for _, id := range ids {
 		data, err := client.request("GET", fmt.Sprintf("/entries/%d", id), nil, nil)
+		if isAuthError(err) {
+			return result, err
+		}
 		if err != nil {
-			failed = append(failed, map[string]any{"id": id, "error": err.Error()})
+			result.Failed = append(result.Failed, failedEntry{ID: id, Error: err.Error()})
 			continue
 		}
 		var current struct {
 			Starred bool `json:"starred"`
 		}
 		if err := decodeInto(data, &current, "entry"); err != nil {
-			failed = append(failed, map[string]any{"id": id, "error": err.Error()})
+			result.Failed = append(result.Failed, failedEntry{ID: id, Error: err.Error()})
 			continue
 		}
 		if current.Starred == star {
-			skipped = append(skipped, id)
+			result.Skipped = append(result.Skipped, id)
 			continue
 		}
 		if _, err := client.request("PUT", fmt.Sprintf("/entries/%d/bookmark", id), nil, nil); err != nil {
-			failed = append(failed, map[string]any{"id": id, "error": err.Error()})
+			if isAuthError(err) {
+				return result, err
+			}
+			result.Failed = append(result.Failed, failedEntry{ID: id, Error: err.Error()})
 			continue
 		}
-		changed = append(changed, id)
+		result.Changed = append(result.Changed, id)
 	}
-	return writeJSON(map[string]any{"starred": star, "changed": changed, "skipped": skipped, "failed": failed})
+	return result, nil
 }
 
-// runEntrySave sends entries to the third-party integration configured in Miniflux.
+func isAuthError(err error) bool {
+	var authErr *authError
+	return errors.As(err, &authErr)
+}
+
+// runEntrySave sends entries to the third-party integration configured in Miniflux. The
+// server answers 202 and dispatches in a goroutine, so "saved" means accepted: a failure on
+// the integration side never comes back here.
 func runEntrySave(args []string) error {
 	fs := newFlagSet("entry save")
 	if err := parseFlags(fs, args); err != nil {
@@ -511,10 +566,13 @@ func runEntrySave(args []string) error {
 		return err
 	}
 	saved := []int64{}
-	failed := []map[string]any{}
+	failed := []failedEntry{}
 	for _, id := range ids {
 		if _, err := client.request("POST", fmt.Sprintf("/entries/%d/save", id), nil, nil); err != nil {
-			failed = append(failed, map[string]any{"id": id, "error": err.Error()})
+			if isAuthError(err) {
+				return err
+			}
+			failed = append(failed, failedEntry{ID: id, Error: err.Error()})
 			continue
 		}
 		saved = append(saved, id)

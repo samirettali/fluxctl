@@ -11,6 +11,10 @@ const version = "0.1.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		if errors.Is(err, errHelp) {
+			printUsage()
+			return
+		}
 		stderr := json.NewEncoder(os.Stderr)
 		stderr.SetEscapeHTML(false)
 		var authErr *authError
@@ -68,9 +72,10 @@ Usage:
   fluxctl feed list [--category ID] [--full]
   fluxctl feed get ID [--full]
   fluxctl feed counters
-  fluxctl entry list [--status unread|read|removed|all] [--starred] [--feed ID] [--category ID]
-                     [--since DURATION|RFC3339] [--until DURATION|RFC3339] [--search QUERY]
-                     [--limit N] [--offset N] [--order FIELD] [--direction asc|desc]
+  fluxctl entry list [--status unread|read|all] [--starred] [--feed ID] [--category ID]
+                     [--since DURATION|RFC3339] [--until DURATION|RFC3339]
+                     [--published-since DURATION|RFC3339] [--published-until DURATION|RFC3339]
+                     [--search QUERY] [--limit N] [--offset N] [--order FIELD] [--direction asc|desc]
                      [--content] [--full]
   fluxctl entry get ID [--html] [--full]
   fluxctl entry fetch ID [--html]

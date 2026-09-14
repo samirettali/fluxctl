@@ -174,10 +174,16 @@ func decodeAPIError(status int, data []byte) error {
 	if json.Unmarshal(data, &body) == nil && body.ErrorMessage != "" {
 		apiErr.Details = body.ErrorMessage
 	} else if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+		// A proxy's 502 page is HTML; keep enough to recognize it, not the whole thing.
+		if len(trimmed) > maxErrorDetails {
+			trimmed = trimmed[:maxErrorDetails] + "…"
+		}
 		apiErr.Details = trimmed
 	}
 	return apiErr
 }
+
+const maxErrorDetails = 300
 
 func writeJSON(value any) error {
 	encoder := json.NewEncoder(os.Stdout)

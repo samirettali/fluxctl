@@ -30,13 +30,30 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
 - **Content is opt-in and plain text by default.** `entry list --content`, `entry get` and
   `entry fetch` flatten the HTML with `htmlToText` (a regexp stripper, not a parser: it only has
   to leave the prose readable). `--html` keeps the markup. Go's regexp is RE2 and has no
-  backreferences, so the script/style dropper lists each tag explicitly.
-- **`--since`/`--until` map to Miniflux's `after`/`before`, which filter on when Miniflux
-  fetched the entry, not on `published_at`.** That is the useful meaning for "what came in since
-  yesterday" and it survives feeds with bogus publication dates (there are entries dated 1970).
-  Both accept `24h`, `7d`, `2w` or an RFC 3339 timestamp.
+  backreferences, so the script/style dropper lists each tag explicitly, and self-closing
+  `<svg/>` is removed first because a lazy `<svg.*?</svg>` would otherwise start there and eat
+  everything up to the next real closing tag. Source whitespace is flattened before tags are
+  turned into breaks, so `<pre>` loses its layout; paragraphs become blank lines, list items
+  and rows single breaks, table cells tabs.
+- Trimmed entries keep `enclosures` as `{url, mime_type}` when present: for a podcast or a
+  YouTube feed the entry URL is the page and the enclosure is the media.
+- `entry fetch` answers `{"id", "content", "reading_time"}` in both text and `--html` mode.
+- **`--since`/`--until` map to `changed_after`/`changed_before`, not to Miniflux's
+  `after`/`before`.** Measured on 2.3.0: `after`/`before` filter on `published_at` (an entry
+  published in 1970 and fetched in April is excluded by `after=1`), and there is no
+  `created_at` filter at all. `changed_at` is set at fetch time and moves again when the entry
+  is read or starred, so on the unread default it is arrival time, which is what "since
+  yesterday" means; on `--status all` a recently read old entry also matches, and the skill
+  says so. `--published-since`/`--published-until` expose `published_after`/`published_before`
+  for when the publication date is the point. All four accept `24h`, `7d`, `2w` or RFC 3339.
 - `entry list` defaults to `--status unread`, `--order published_at --direction desc`,
-  `--limit 50`. `--status all` drops the filter, `--limit 0` asks for everything.
+  `--limit 50`. `--status all` drops the filter. **`limit` is always sent**: Miniflux defaults
+  to 100 when it is absent and treats an explicit `0` as no cap, so `--limit 0` is "everything"
+  only because the parameter is on the wire. Above 1000 Miniflux answers 400, so the cap is
+  enforced locally. `removed` is not a valid status filter on 2.3.0 (400), so it is not offered.
+- `--order` accepts everything the server does (`id`, `status`, `published_at`, `created_at`,
+  `changed_at`, `category_title`, `category_id`, `title`, `author`); `created_at` is the natural
+  order for an arrival recap.
 - **Configuration comes from `MINIFLUX_URL` and `MINIFLUX_API_KEY`, with the rbw entry
   `miniflux-api-key` as the fallback** (password = key, first URI = base URL). The fallback is
   what makes a bare binary in `~/.local/bin` work from an agent today; the dotfiles wrapper will
@@ -48,10 +65,15 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
 - **`star`/`unstar` are idempotent on top of a toggle.** Miniflux only exposes
   `PUT /entries/{id}/bookmark`, which flips the flag, so each entry is read first and only
   flipped when it is not already in the requested state. The answer is
-  `{"starred", "changed", "skipped", "failed"}`; one failure does not abort the rest.
+  `{"starred", "changed", "skipped", "failed"}`; one failure does not abort the rest, except an
+  `authError`, which would fail every remaining entry the same way and is returned as is so the
+  caller gets the `fix` on stderr and a non-zero exit. `save` follows the same rule.
 - `read`/`unread` are one request for all IDs (`PUT /entries` takes a list), `save` is one
   request per entry (`POST /entries/{id}/save`), which sends it to the third-party integration
-  configured in Miniflux — linkding on Samir's instance.
+  configured in Miniflux — linkding on Samir's instance. **Miniflux answers 202 and dispatches
+  in a goroutine**, so `saved` means accepted; a failure on the integration side never surfaces.
 - Flags may come before or after positional arguments (`parseFlags` re-parses after each
   positional), because agents write `entry get 42 --full` as often as the other way round.
 - A 2xx with an empty body (204 on status updates, 202 on save) is a success with nil data.
+- Non-JSON error bodies (a proxy's 502 page) are kept in `details` truncated to 300 characters.
+- `-h`/`--help` on any subcommand prints the usage to stderr and exits 0 (`errHelp`).
