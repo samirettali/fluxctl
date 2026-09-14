@@ -175,8 +175,8 @@ func decodeAPIError(status int, data []byte) error {
 		apiErr.Details = body.ErrorMessage
 	} else if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
 		// A proxy's 502 page is HTML; keep enough to recognize it, not the whole thing.
-		if len(trimmed) > maxErrorDetails {
-			trimmed = trimmed[:maxErrorDetails] + "…"
+		if runes := []rune(trimmed); len(runes) > maxErrorDetails {
+			trimmed = string(runes[:maxErrorDetails]) + "…"
 		}
 		apiErr.Details = trimmed
 	}
