@@ -77,8 +77,9 @@ func newMinifluxClient() (*minifluxClient, error) {
 		return nil, notConfigured("miniflux API key is missing", nil)
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	if _, err := url.ParseRequestURI(baseURL); err != nil {
-		return nil, notConfigured("miniflux URL is invalid", err)
+	parsed, err := url.Parse(baseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, notConfigured(fmt.Sprintf("miniflux URL %q is invalid: expected http(s)://host", baseURL), err)
 	}
 	return &minifluxClient{
 		baseURL: baseURL,

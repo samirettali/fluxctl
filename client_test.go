@@ -75,6 +75,23 @@ func TestRequestErrors(t *testing.T) {
 	}
 }
 
+func TestNewClientRejectsBadURL(t *testing.T) {
+	t.Setenv("MINIFLUX_API_KEY", "k")
+	for _, bad := range []string{"localhost:8080", "http://", "ftp://x", "rss.example.com"} {
+		t.Setenv("MINIFLUX_URL", bad)
+		_, err := newMinifluxClient()
+		var authErr *authError
+		if !errors.As(err, &authErr) {
+			t.Errorf("%q should be rejected with a fix, got %v", bad, err)
+		}
+	}
+	t.Setenv("MINIFLUX_URL", "https://rss.example.com/")
+	client, err := newMinifluxClient()
+	if err != nil || client.baseURL != "https://rss.example.com" {
+		t.Errorf("valid URL rejected or not trimmed: %v %v", client, err)
+	}
+}
+
 func TestDecodeAPIErrorNonJSON(t *testing.T) {
 	var apiErr *APIError
 	err := decodeAPIError(502, []byte("<html>Bad Gateway</html>"))

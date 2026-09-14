@@ -42,7 +42,7 @@ fluxctl entry list --since 7d --category 9 --limit 0
 fluxctl entry list --since 2d --feed 703
 ```
 
-`--since`/`--until` take `24h`, `7d`, `2w` or an RFC 3339 timestamp and filter on when the entry last changed. For unread entries that is when Miniflux fetched them, which is what "since yesterday" means and is safe against feeds with bogus publication dates; with `--status all` an old entry that was just read or starred also matches. `--published-since`/`--published-until` filter on the publication date instead. `entry list` is unread-only by default, ordered by `published_at desc`, 50 per page; `--order created_at` sorts by arrival, `--limit 0` returns everything (pages are capped at 1000 by the server), `--status all` includes read entries, `--starred` keeps only starred ones.
+`--since`/`--until` take `24h`, `7d`, `2w` or an RFC 3339 timestamp and filter on when the entry last changed. For unread entries that is when Miniflux fetched them, which is what "since yesterday" means and is safe against feeds with bogus publication dates; with `--status all` an old entry that was just read or starred also matches. `--published-since`/`--published-until` filter on the publication date instead. `entry list` is unread-only by default, ordered by `published_at desc`, 50 per page; `--order created_at` sorts by arrival, `--limit 0` returns everything in one response with no cap (an explicit `--limit` may be at most 1000), `--status all` includes read entries, `--starred` keeps only starred ones.
 
 `total` is the count for the whole filter, not the page. With several hundred entries, group by `category.title` and `feed.title` and summarize per group rather than listing each item.
 
@@ -55,7 +55,7 @@ fluxctl entry fetch 140084              # ask Miniflux to download the full page
 fluxctl entry list --since 24h --category 9 --limit 0 --content   # content of every entry, costly
 ```
 
-`entry fetch` answers `{"id", "content", "reading_time"}` and fails with a 500 when the page is gone; fall back to the URL in the entry.
+`entry fetch` answers `{"id", "content", "reading_time"}` and fails with a 500 when the page is gone; fall back to the URL in the entry. It does not update the entry in Miniflux: a later `entry get` still returns the summary.
 
 ## Search
 
@@ -76,7 +76,7 @@ fluxctl entry unstar 140084
 fluxctl entry save 140084               # send to the integration configured in Miniflux (linkding)
 ```
 
-`star`/`unstar` answer `{"starred", "changed", "skipped", "failed": [{"id", "error"}]}`, `save` answers `{"saved", "failed"}`; both go on past a per-entry failure, so report `failed` whenever it is non-empty. `saved` means Miniflux accepted the entry and is sending it in the background: a failure on the linkding side never comes back, so confirm with the linkding skill when it matters. `read`/`unread` answer `{"status", "entries"}`.
+`star`/`unstar` answer `{"starred", "changed", "skipped", "failed": [{"id", "error"}]}`, `save` answers `{"saved", "failed"}`; both go on past a per-entry failure, so report `failed` whenever it is non-empty. `saved` means Miniflux accepted the entry and is sending it in the background: a failure on the linkding side never comes back, so confirm with the linkding skill when it matters. `read`/`unread` answer `{"status", "entries"}`, which echoes the input: Miniflux accepts unknown IDs silently, so a typo is not caught there. Take IDs from a previous `entry list` or `entry get`, never from memory.
 
 ## Operating rules
 

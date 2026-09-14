@@ -42,6 +42,16 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 // errHelp is returned when a subcommand gets -h/--help; main prints the usage and exits 0.
 var errHelp = errors.New("help requested")
 
+func isHelp(arg string) bool { return arg == "-h" || arg == "--help" || arg == "help" }
+
+// noArgs rejects stray positionals, so a mistyped flag does not pass silently.
+func noArgs(fs *flag.FlagSet) error {
+	if fs.NArg() > 0 {
+		return fmt.Errorf("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
+	}
+	return nil
+}
+
 func parseIDs(name string, args []string) ([]int64, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("%s: at least one ID is required", name)
@@ -62,6 +72,9 @@ func runMe(args []string) error {
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
+	if err := noArgs(fs); err != nil {
+		return err
+	}
 	client, err := newMinifluxClient()
 	if err != nil {
 		return err
@@ -77,11 +90,17 @@ func runCategory(args []string) error {
 	if len(args) == 0 {
 		return errors.New("category: subcommand required (list)")
 	}
+	if isHelp(args[0]) {
+		return errHelp
+	}
 	switch args[0] {
 	case "list":
 		fs := newFlagSet("category list")
 		full := fs.Bool("full", false, "return Miniflux's own objects")
 		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if err := noArgs(fs); err != nil {
 			return err
 		}
 		client, err := newMinifluxClient()
@@ -109,12 +128,18 @@ func runFeed(args []string) error {
 	if len(args) == 0 {
 		return errors.New("feed: subcommand required (list, get, counters)")
 	}
+	if isHelp(args[0]) {
+		return errHelp
+	}
 	switch args[0] {
 	case "list":
 		fs := newFlagSet("feed list")
 		categoryID := fs.Int64("category", 0, "only feeds in this category")
 		full := fs.Bool("full", false, "return Miniflux's own objects")
 		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if err := noArgs(fs); err != nil {
 			return err
 		}
 		client, err := newMinifluxClient()
@@ -169,6 +194,9 @@ func runFeed(args []string) error {
 	case "counters":
 		fs := newFlagSet("feed counters")
 		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if err := noArgs(fs); err != nil {
 			return err
 		}
 		client, err := newMinifluxClient()
@@ -306,6 +334,9 @@ func runEntry(args []string) error {
 	if len(args) == 0 {
 		return errors.New("entry: subcommand required (list, get, fetch, read, unread, star, unstar, save)")
 	}
+	if isHelp(args[0]) {
+		return errHelp
+	}
 	switch args[0] {
 	case "list":
 		return runEntryList(args[1:])
@@ -349,8 +380,8 @@ func runEntryList(args []string) error {
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("entry list: unexpected argument %q", fs.Arg(0))
+	if err := noArgs(fs); err != nil {
+		return err
 	}
 	query, err := o.query(time.Now())
 	if err != nil {
@@ -415,7 +446,9 @@ func runEntryGet(args []string) error {
 }
 
 // runEntryFetch asks Miniflux to download the original page, for feeds that only ship a
-// summary. The answer is {"id", "content", "reading_time"} in both text and HTML mode.
+// summary. The answer is {"id", "content", "reading_time"} in both text and HTML mode. The
+// entry itself is not updated (no update_content=true), so a later `entry get` still returns
+// the summary and changed_at does not move.
 func runEntryFetch(args []string) error {
 	fs := newFlagSet("entry fetch")
 	asHTML := fs.Bool("html", false, "keep the content as HTML instead of plain text")
@@ -450,6 +483,8 @@ func runEntryFetch(args []string) error {
 	return writeJSON(map[string]any{"id": ids[0], "content": body.Content, "reading_time": body.ReadingTime})
 }
 
+// runEntryStatus is one request for every ID. Miniflux updates by `id = ANY(...)` without
+// checking the row count, so an unknown ID is accepted silently; the answer echoes the input.
 func runEntryStatus(status string, args []string) error {
 	name := "entry " + status
 	fs := newFlagSet(name)

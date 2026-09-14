@@ -37,7 +37,9 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
   and rows single breaks, table cells tabs.
 - Trimmed entries keep `enclosures` as `{url, mime_type}` when present: for a podcast or a
   YouTube feed the entry URL is the page and the enclosure is the media.
-- `entry fetch` answers `{"id", "content", "reading_time"}` in both text and `--html` mode.
+- `entry fetch` answers `{"id", "content", "reading_time"}` in both text and `--html` mode. It
+  does not send `update_content=true`, so the fetched page is returned but not stored and
+  `changed_at` stays put; a later `entry get` still returns the feed's summary.
 - **`--since`/`--until` map to `changed_after`/`changed_before`, not to Miniflux's
   `after`/`before`.** Measured on 2.3.0: `after`/`before` filter on `published_at` (an entry
   published in 1970 and fetched in April is excluded by `after=1`), and there is no
@@ -49,8 +51,8 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
 - `entry list` defaults to `--status unread`, `--order published_at --direction desc`,
   `--limit 50`. `--status all` drops the filter. **`limit` is always sent**: Miniflux defaults
   to 100 when it is absent and treats an explicit `0` as no cap, so `--limit 0` is "everything"
-  only because the parameter is on the wire. Above 1000 Miniflux answers 400, so the cap is
-  enforced locally. `removed` is not a valid status filter on 2.3.0 (400), so it is not offered.
+  only because the parameter is on the wire, and it really is everything in one response (no
+  server-side page cap on 0). Above 1000 Miniflux answers 400, so that cap is enforced locally. `removed` is not a valid status filter on 2.3.0 (400), so it is not offered.
 - `--order` accepts everything the server does (`id`, `status`, `published_at`, `created_at`,
   `changed_at`, `category_title`, `category_id`, `title`, `author`); `created_at` is the natural
   order for an arrival recap.
@@ -68,7 +70,11 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
   `{"starred", "changed", "skipped", "failed"}`; one failure does not abort the rest, except an
   `authError`, which would fail every remaining entry the same way and is returned as is so the
   caller gets the `fix` on stderr and a non-zero exit. `save` follows the same rule.
-- `read`/`unread` are one request for all IDs (`PUT /entries` takes a list), `save` is one
+- `read`/`unread` are one request for all IDs (`PUT /entries` takes a list). **Miniflux updates
+  with `id = ANY(...)` and never checks the row count**, so an unknown ID is accepted and the
+  answer just echoes the input; verifying each ID first would cost a GET per entry for a typo
+  the skill tells agents to avoid. `star` does read first because the toggle needs the state.
+  `save` is one
   request per entry (`POST /entries/{id}/save`), which sends it to the third-party integration
   configured in Miniflux — linkding on Samir's instance. **Miniflux answers 202 and dispatches
   in a goroutine**, so `saved` means accepted; a failure on the integration side never surfaces.
@@ -76,4 +82,10 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
   positional), because agents write `entry get 42 --full` as often as the other way round.
 - A 2xx with an empty body (204 on status updates, 202 on save) is a success with nil data.
 - Non-JSON error bodies (a proxy's 502 page) are kept in `details` truncated to 300 characters.
-- `-h`/`--help` on any subcommand prints the usage to stderr and exits 0 (`errHelp`).
+- `-h`/`--help`/`help` on a group (`entry --help`) or a leaf (`entry list -h`) prints the usage
+  to stderr and exits 0 (`errHelp`). Every command rejects stray positionals, so a mistyped
+  flag cannot pass silently.
+- `MINIFLUX_URL` must be `http(s)://host`; `url.ParseRequestURI` accepted `localhost:8080` and
+  the failure then surfaced as a transport error without a `fix`.
+- The tag stripper understands quoted attributes, so a `>` inside `title="a>b"` does not leak
+  text. Nested `<svg>` inside `<svg>` still leaves a tail; not worth a parser.

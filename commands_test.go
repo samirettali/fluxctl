@@ -109,6 +109,22 @@ func TestParseFlagsHelp(t *testing.T) {
 	}
 }
 
+func TestGroupHelp(t *testing.T) {
+	for _, args := range [][]string{{"entry", "--help"}, {"feed", "-h"}, {"category", "help"}, {"entry", "list", "-h"}} {
+		if err := run(args); !errors.Is(err, errHelp) {
+			t.Errorf("%v should surface errHelp, got %v", args, err)
+		}
+	}
+}
+
+func TestStrayPositionals(t *testing.T) {
+	for _, args := range [][]string{{"me", "x"}, {"category", "list", "x"}, {"feed", "list", "x"}, {"feed", "counters", "x"}, {"entry", "list", "x"}} {
+		if err := run(args); err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+			t.Errorf("%v should reject the stray argument, got %v", args, err)
+		}
+	}
+}
+
 func TestParseIDs(t *testing.T) {
 	if _, err := parseIDs("x", nil); err == nil {
 		t.Error("no IDs should fail")

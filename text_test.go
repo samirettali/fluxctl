@@ -16,6 +16,7 @@ func TestHTMLToText(t *testing.T) {
 		{"self closing br", "line<br/>break", "line\nbreak"},
 		{"self closing svg keeps what follows", `<svg class="i"/><p>A</p><svg><path/></svg><p>B</p>`, "A\n\nB"},
 		{"tab inside cell text is collapsed", "<td>a \t b</td><td>c</td>", "a b\tc"},
+		{"gt inside a quoted attribute", `<a title="a>b">link</a> <img alt='x>y'> end`, "link end"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
