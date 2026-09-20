@@ -188,10 +188,6 @@ func readVaultContext(ctx context.Context) (string, string, error) {
 
 // request performs one API call. A 2xx with an empty body returns nil data.
 func (client *minifluxClient) request(method, path string, query url.Values, body any) (json.RawMessage, error) {
-	endpoint := client.baseURL + "/v1" + path
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -200,14 +196,36 @@ func (client *minifluxClient) request(method, path string, query url.Values, bod
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequest(method, endpoint, reader)
+	data, err := client.requestBytes(method, path, query, reader, "application/json", "application/json")
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		if method == http.MethodGet {
+			return nil, errors.New("decoding miniflux response: empty JSON response")
+		}
+		return nil, nil
+	}
+	if !json.Valid(data) {
+		return nil, errors.New("decoding miniflux response: invalid JSON")
+	}
+	return redactResponse(json.RawMessage(data), body), nil
+}
+
+// requestBytes shares authentication, redirect and bounded error handling with JSON calls.
+func (client *minifluxClient) requestBytes(method, path string, query url.Values, body io.Reader, contentType, accept string) ([]byte, error) {
+	endpoint := client.baseURL + "/v1" + path
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	req, err := http.NewRequest(method, endpoint, body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-Auth-Token", client.apiKey)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := client.http.Do(req)
 	if err != nil {
@@ -228,6 +246,11 @@ func (client *minifluxClient) request(method, path string, query url.Values, bod
 		responseBody = io.LimitReader(resp.Body, 16*1024)
 	}
 	data, readErr := io.ReadAll(responseBody)
+	// Subscription and OPML failures may echo supplied credentials or entire
+	// documents. Keep status/remedy but never surface their response diagnostics.
+	if sensitiveRequest(method, path) && (resp.StatusCode < 200 || resp.StatusCode > 299) {
+		data = nil
+	}
 	// Preserve the HTTP status (and authentication remedy) even when an error
 	// response's body is truncated or unreadable.
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -243,16 +266,7 @@ func (client *minifluxClient) request(method, path string, query url.Values, bod
 	if readErr != nil {
 		return nil, fmt.Errorf("reading miniflux response: %w", readErr)
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		if method == http.MethodGet {
-			return nil, errors.New("decoding miniflux response: empty JSON response")
-		}
-		return nil, nil
-	}
-	if !json.Valid(data) {
-		return nil, errors.New("decoding miniflux response: invalid JSON")
-	}
-	return json.RawMessage(data), nil
+	return data, nil
 }
 
 func decodeAPIError(status int, data []byte) error {

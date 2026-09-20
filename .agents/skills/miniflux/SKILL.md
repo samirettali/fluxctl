@@ -1,12 +1,12 @@
 ---
 name: miniflux
-description: Read Samir's Miniflux RSS reader with fluxctl — list what came in recently, per category or feed, read an article's text, search entries, then mark entries read, star them, or save them to linkding. Use when asked for a recap of the news, what is new in the feeds, what is worth reading or watching, to catch up on a topic or a source, or to act on articles (read, star, save).
+description: Use fluxctl for Samir's Miniflux RSS reader — recap feeds, read/search articles, read/star/save entries, manage subscriptions and categories, import/export OPML, edit/import articles, clean history, mark an entire scope read and update enclosure playback. Use for RSS reading and user-facing Miniflux actions, not user/API-key/server administration.
 compatibility: Requires fluxctl with MINIFLUX_URL and MINIFLUX_API_KEY set, or an unlocked rbw vault holding the miniflux-api-key entry.
 ---
 
 # Miniflux
 
-`fluxctl` reads the Miniflux instance and acts on entries. stdout is JSON; errors are JSON on stderr.
+`fluxctl` reads and manages the current Miniflux account. stdout is JSON; errors are JSON on stderr. Commands follow Miniflux 2.3.0–2.3.3; `entry ids` requires 2.3.2+. No user CRUD, API-key management or server settings. The full field reference and versioned endpoint inventory are in `docs/user-api.md` in the fluxctl repository.
 
 ## Output shapes
 
@@ -19,7 +19,9 @@ entry     {id, title, url, author?, published_at, created_at, status, starred, r
            feed:{id,title}, category:{id,title}, enclosures?:[{url, mime_type}], tags?, content?}
 ```
 
-`enclosures` is where a podcast episode or a YouTube video lives; `url` is the page. `--full` on `category list`, `feed list|get` and `entry list|get` returns Miniflux's objects verbatim, about ten times the size. Do not use it unless the trimmed object lacks a field the task needs.
+`enclosures` is where a podcast episode or a YouTube video lives; `url` is the page. Object-returning commands support `--full`, often about ten times the size. Use it only when a needed field is absent (for example an enclosure ID or subscription settings).
+
+**`--full` is not verbatim for secrets:** subscription passwords/cookies and credential-bearing feed integration URLs are always redacted, including nested feeds in entries. Proxy URLs lose credentials/query/fragment, and URL userinfo is removed elsewhere. Never try to recover these credentials from output. Feed credentials are supplied only through a private `--input` JSON file; no password/cookie/authenticated-proxy flags exist. Do not print that file or its contents.
 
 ## Authentication
 
@@ -80,8 +82,70 @@ fluxctl entry save 140084               # send to the integration configured in 
 
 ## Operating rules
 
-- Only mutate when asked. A recap does not mark anything read; a "flag the important ones" request stars, it does not save, unless the user says so.
+- Only mutate when asked. A recap does not mark anything read; a "flag the important ones" request stars, it does not save, unless the user says so. Broad/destructive operations need an explicit matching request, not an inference from a recap.
 - Report entries with title, feed and URL, never bare IDs. Keep the IDs at hand for the follow-up action.
-- On a 404, re-check the ID before retrying.
+- On a 404, re-check the ID. Never automatically retry a mutation after any error: the server may already have applied it, including when the response is lost or malformed.
 - `feed list` shows `parsing_error` on feeds Miniflux cannot fetch; mention them only when the user asks about feed health.
-- Never print the API key.
+- Never print API keys or subscription credentials. OPML can contain authenticated URLs; keep exports private and never print imported/exported contents.
+
+## Subscriptions and categories
+
+```sh
+fluxctl feed discover --url https://example.com       # read-only; choose a returned feed URL
+fluxctl feed create --feed-url https://example.com/rss --category 3
+fluxctl feed update 7 --category 4 --title 'Research' --disabled=false
+fluxctl feed update 7 --crawler=true
+fluxctl feed create --input /private/subscription.json
+fluxctl feed refresh 7
+fluxctl feed refresh --all
+fluxctl category create --title 'Research' --hide-globally
+fluxctl category update 3 --hide-globally=false
+fluxctl category refresh 3
+fluxctl feed delete 7
+fluxctl category delete 3
+```
+
+**Delete is destructive:** removing a feed removes its entries; removing a category removes its feeds and their entries. Refresh-all/category refresh queues work, so the acknowledgment does not prove all feeds have finished refreshing.
+
+Flags work before or after IDs. Create/update/discovery support `--input FILE` JSON; flags override fields from that file. Omitted update fields stay unchanged, `--boolean=false` sends explicit false, and updates require at least one field. Feed JSON keys match the public API (e.g. `feed_url`, `category_id`, `crawler`, rules, `disabled`); corresponding nonsecret flags use hyphens (`--feed-url`, `--category`). Category input accepts `title`/`hide_globally`. Secret fields `username`, `password`, `cookie`, `proxy_url` are file-only; authenticated feed URLs also belong in that file, not shell arguments. Use `feed get ID --full` to inspect nonsecret configuration.
+
+## Scope-wide read, editing and cleanup
+
+```sh
+fluxctl feed mark-all-read 7
+fluxctl category mark-all-read 3
+fluxctl entry mark-all-read                       # current account only; no user-ID argument
+fluxctl entry update 42 --title 'Corrected' --content-file article.html
+fluxctl entry import 7 --url https://example.com/article --content-file article.html --status unread
+fluxctl entry import 7 --input article.json
+fluxctl entry fetch-update 42                     # persist fetched content; unlike plain fetch
+fluxctl entry flush-history
+```
+
+Mark-read changes the whole named scope. Feed/category operations use the server's current-time publication cutoff; future-published entries can remain unread. Account-wide mark-read uses only the ID returned by `/me`.
+
+Update accepts `title`/`content` via flags or JSON; `--content-file` cannot be combined with `content`. Import accepts `url`, `title`, `content`, `author`, `comments_url`, `published_at` (positive Unix seconds), `status`, `starred`, `external_id`, and JSON-only `tags` (string array). Import defaults to **read** when status is omitted. Re-import can affect an existing matching entry: `starred=false` does not unstar it; use `unstar` separately. `fetch-update` explicitly persists the fetched article and changes `changed_at`; plain `fetch` is still read-only. Both return text, or HTML with `--html`.
+
+**`flush-history` permanently deletes read, non-starred, non-shared entries and prevents re-ingestion with tombstones.** It is asynchronous; `accepted:true` means accepted, not finished. Do not substitute it for mark-read or assume it is reversible.
+
+## OPML, playback and additional reads
+
+```sh
+fluxctl opml export --output subscriptions.opml
+fluxctl opml import --input subscriptions.opml
+fluxctl entry list --tag go --tag rss --globally-visible --starred=false
+fluxctl entry list --before-id 500 --after-id 100
+fluxctl entry ids --status unread --limit 1000 --offset 0
+fluxctl entry get 42 --full                        # obtain enclosure IDs
+fluxctl enclosure get 8
+fluxctl enclosure update 8 --media-progression 120 # nonnegative playback seconds; 0 resets
+fluxctl feed icon 7
+fluxctl icon get 9
+fluxctl integration status
+fluxctl server version
+fluxctl version                                  # local CLI version, no API call
+```
+
+OPML uses explicit regular input files and new output paths, not `-` or XML stdout. Export refuses to overwrite any existing file/symlink and creates mode 0600. Receipts are JSON (`{output,bytes}` or `{action,accepted}`). Import changes subscriptions/categories, not articles, and a remote failure can leave partial effects. Do not automatically retry it. Sensitive OPML/subscription failures omit server response text while preserving status and authentication fixes.
+
+`entry ids` requires 2.3.2+, returns `{total,entry_ids}`, defaults to all statuses and 1000 IDs in descending ID order, and accepts page sizes 1–10000. It supports status/starred/limit/offset, not general feed/category filters; use `entry list` for those. `--starred=false` explicitly selects unstarred entries; omission leaves starred state unfiltered. Visibility false removes that filter; it does not select only hidden entries. Icons are JSON with MIME type/base64 data, not implicit binary downloads.

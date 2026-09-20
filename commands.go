@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -108,7 +109,7 @@ func runMe(args []string) error {
 
 func runCategory(args []string) error {
 	if len(args) == 0 {
-		return errors.New("category: subcommand required (list)")
+		return errors.New("category: subcommand required (see category --help)")
 	}
 	if isHelp(args[0]) {
 		return errHelp
@@ -140,13 +141,13 @@ func runCategory(args []string) error {
 		}
 		return writeJSON(categories)
 	default:
-		return fmt.Errorf("category: unknown subcommand %q", args[0])
+		return runUserCommand("category", args)
 	}
 }
 
 func runFeed(args []string) error {
 	if len(args) == 0 {
-		return errors.New("feed: subcommand required (list, get, counters)")
+		return errors.New("feed: subcommand required (see feed --help)")
 	}
 	if isHelp(args[0]) {
 		return errHelp
@@ -232,7 +233,7 @@ func runFeed(args []string) error {
 		}
 		return writeJSON(data)
 	default:
-		return fmt.Errorf("feed: unknown subcommand %q", args[0])
+		return runUserCommand("feed", args)
 	}
 }
 
@@ -364,7 +365,7 @@ func (o entryListOptions) query(now time.Time) (url.Values, error) {
 
 func runEntry(args []string) error {
 	if len(args) == 0 {
-		return errors.New("entry: subcommand required (list, get, fetch, read, unread, star, unstar, save)")
+		return errors.New("entry: subcommand required (see entry --help)")
 	}
 	if isHelp(args[0]) {
 		return errHelp
@@ -376,6 +377,8 @@ func runEntry(args []string) error {
 		return runEntryGet(args[1:])
 	case "fetch":
 		return runEntryFetch(args[1:])
+	case "fetch-update":
+		return runEntryFetchMode(args[1:], true)
 	case "read":
 		return runEntryStatus("read", args[1:])
 	case "unread":
@@ -387,7 +390,7 @@ func runEntry(args []string) error {
 	case "save":
 		return runEntrySave(args[1:])
 	default:
-		return fmt.Errorf("entry: unknown subcommand %q", args[0])
+		return runUserCommand("entry", args)
 	}
 }
 
@@ -407,6 +410,11 @@ func runEntryList(args []string) error {
 	fs.IntVar(&o.offset, "offset", 0, "page offset")
 	fs.StringVar(&o.order, "order", "published_at", "id, status, published_at, created_at, changed_at, category_title, category_id, title or author")
 	fs.StringVar(&o.direction, "direction", "desc", "asc or desc")
+	var tags stringList
+	fs.Var(&tags, "tag", "filter tag (repeatable)")
+	visible := fs.Bool("globally-visible", false, "exclude feeds/categories hidden from global lists")
+	beforeID := fs.Int64("before-id", 0, "entries with an ID below this cursor")
+	afterID := fs.Int64("after-id", 0, "entries with an ID above this cursor")
 	content := fs.Bool("content", false, "include the content of each entry as plain text")
 	full := fs.Bool("full", false, "return Miniflux's own objects")
 	if err := parseFlags(fs, args); err != nil {
@@ -419,6 +427,26 @@ func runEntryList(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *beforeID < 0 || *afterID < 0 {
+		return errors.New("entry list: ID cursors must be nonnegative")
+	}
+	if *beforeID > 0 {
+		query.Set("before_entry_id", strconv.FormatInt(*beforeID, 10))
+	}
+	if *afterID > 0 {
+		query.Set("after_entry_id", strconv.FormatInt(*afterID, 10))
+	}
+	for _, tag := range tags {
+		query.Add("tags", tag)
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "starred" {
+			query.Set("starred", strconv.FormatBool(o.starred))
+		}
+		if f.Name == "globally-visible" {
+			query.Set("globally_visible", strconv.FormatBool(*visible))
+		}
+	})
 	client, err := newMinifluxClient()
 	if err != nil {
 		return err
@@ -481,24 +509,48 @@ func runEntryGet(args []string) error {
 // summary. The answer is {"id", "content", "reading_time"} in both text and HTML mode. The
 // entry itself is not updated (no update_content=true), so a later `entry get` still returns
 // the summary and changed_at does not move.
-func runEntryFetch(args []string) error {
-	fs := newFlagSet("entry fetch")
+func runEntryFetch(args []string) error { return runEntryFetchMode(args, false) }
+
+func runEntryFetchMode(args []string, update bool) error {
+	name := "entry fetch"
+	if update {
+		name = "entry fetch-update"
+	}
+	fs := newFlagSet(name)
 	asHTML := fs.Bool("html", false, "keep the content as HTML instead of plain text")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	ids, err := parseIDs("entry fetch", fs.Args())
+	ids, err := parseIDs(name, fs.Args())
 	if err != nil {
 		return err
 	}
 	if len(ids) != 1 {
-		return errors.New("entry fetch: exactly one ID is required")
+		return fmt.Errorf("%s: exactly one ID is required", name)
 	}
 	client, err := newMinifluxClient()
 	if err != nil {
 		return err
 	}
-	data, err := client.request("GET", fmt.Sprintf("/entries/%d/fetch-content", ids[0]), nil, nil)
+	var query url.Values
+	if update {
+		query = url.Values{"update_content": {"true"}}
+		// This upstream mutation uses GET. A fresh, non-reusing transport keeps
+		// net/http from replaying it after a reused connection fails.
+		transport := &http.Transport{Proxy: http.ProxyFromEnvironment, DisableKeepAlives: true}
+		defer transport.CloseIdleConnections()
+		client.http.Transport = redirectTransport{transport}
+		client.http.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if err := checkRedirect(req, via); err != nil {
+				return err
+			}
+			if req.URL.Query().Get("update_content") != "true" {
+				return redirectError("refusing redirect that drops the content update")
+			}
+			return nil
+		}
+	}
+	data, err := client.request("GET", fmt.Sprintf("/entries/%d/fetch-content", ids[0]), query, nil)
 	if err != nil {
 		return err
 	}
