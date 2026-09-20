@@ -191,18 +191,16 @@ func TestOPMLLocalFileSafety(t *testing.T) {
 	})
 }
 
-// R2: a failed export owns the inode it reserved, not any later replacement
-// installed at the same pathname. A symlink to the moved inode is not ours either.
+// R2: concurrent public destination creation must survive a failed export.
+// Export no longer reserves that pathname or uses it for cleanup.
 func TestOPMLFailureKeepsConcurrentReplacement(t *testing.T) {
 	for _, replacement := range []string{"file", "symlink", "directory"} {
 		t.Run(replacement, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "export.opml")
-			moved := path + ".moved"
+			moved := inputFile(t, "keep target")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if err := os.Rename(path, moved); err != nil {
-					t.Errorf("move reservation: %v", err)
-					http.Error(w, "move failed", 500)
-					return
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Errorf("public destination reserved before publication: %v", err)
 				}
 				var err error
 				switch replacement {
@@ -244,9 +242,10 @@ func TestOPMLFailureKeepsConcurrentReplacement(t *testing.T) {
 					t.Fatal("changed replacement directory")
 				}
 			}
-			if _, err := os.Stat(moved); err != nil {
-				t.Fatalf("changed moved reservation: %v", err)
+			if data, err := os.ReadFile(moved); err != nil || string(data) != "keep target" {
+				t.Fatalf("changed unrelated target: %q %v", data, err)
 			}
+			assertNoExportStaging(t, filepath.Dir(path))
 		})
 	}
 }

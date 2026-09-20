@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 func readInputFile(path string) ([]byte, error) {
@@ -110,28 +111,11 @@ func runOPML(action string, args []string) error {
 		}
 		return writeJSON(map[string]any{"action": "opml import", "accepted": true})
 	}
-	// Reserve exclusively before making a request. Existing files, directories and
-	// symlinks are never replaced; a failed export removes only our new file.
-	f, err := os.OpenFile(*path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, cleanup, err := stageExport(*path)
 	if err != nil {
-		return errors.New("cannot create output file: use a new path")
+		return err
 	}
-	created, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return errors.New("cannot identify output file")
-	}
-	complete := false
-	defer func() {
-		f.Close()
-		if !complete {
-			// Another process may have moved our reservation and replaced its
-			// pathname. Never remove that replacement or follow a new symlink.
-			if current, err := os.Lstat(*path); err == nil && os.SameFile(created, current) {
-				_ = os.Remove(*path)
-			}
-		}
-	}()
+	defer cleanup()
 	client, err := newMinifluxClient()
 	if err != nil {
 		return err
@@ -143,12 +127,51 @@ func runOPML(action string, args []string) error {
 	if err := validateOPML(data); err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		return errors.New("cannot write output file")
+	if err := publishExport(f, *path, data); err != nil {
+		return err
 	}
-	if err := f.Close(); err != nil {
-		return errors.New("cannot close output file")
-	}
-	complete = true
 	return writeJSON(map[string]any{"output": *path, "bytes": len(data)})
+}
+
+// The public destination is never reserved or unlinked. Only a private staging
+// directory and its file are cleaned up; no pathname identity check can make a
+// later unlink of the public destination safe against concurrent replacement.
+func stageExport(output string) (*os.File, func(), error) {
+	if _, err := os.Lstat(output); err == nil {
+		return nil, nil, errors.New("output already exists: use a new path")
+	} else if !os.IsNotExist(err) {
+		return nil, nil, errors.New("cannot inspect output path")
+	}
+	directory, err := os.MkdirTemp(filepath.Dir(output), ".fluxctl-export-*")
+	if err != nil {
+		return nil, nil, errors.New("cannot create private export staging directory")
+	}
+	staged := filepath.Join(directory, "export.opml")
+	file, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		_ = os.Remove(directory)
+		return nil, nil, errors.New("cannot create private export staging file")
+	}
+	cleanup := func() {
+		_ = file.Close()
+		_ = os.Remove(staged)
+		_ = os.Remove(directory)
+	}
+	return file, cleanup, nil
+}
+
+func publishExport(file *os.File, output string, data []byte) error {
+	if _, err := file.Write(data); err != nil {
+		return errors.New("cannot write export staging file")
+	}
+	if err := file.Close(); err != nil {
+		return errors.New("cannot close export staging file")
+	}
+	// Staging in the destination directory keeps both names on one filesystem.
+	// Link publishes the complete, closed file atomically without overwriting any
+	// file or symlink created since preflight. Unsupported filesystems fail closed.
+	if err := os.Link(file.Name(), output); err != nil {
+		return errors.New("cannot publish output without overwriting: use an unused path on a filesystem supporting hard links")
+	}
+	return nil
 }

@@ -261,9 +261,20 @@ fluxctl opml export --output subscriptions.opml
 fluxctl opml import --input subscriptions.opml
 ```
 
-Export creates a **new file with mode 0600**, using exclusive creation; existing
-files, directories and symlinks are never overwritten. Missing parent directories
-are not created. HTTP/XML/write failures remove the newly reserved output file.
+Export writes a **mode-0600 file inside a private mode-0700 temporary directory**
+in the output directory. Only after XML validation, writing and closing succeed
+is that complete file published by an **atomic no-clobber hard link**. Existing or
+concurrently created files, directories and symlinks are never overwritten. The
+public output path is never reserved or unlinked by cleanup, including after a
+successful publication. Missing parent directories are not created.
+
+This requires hard-link support on the destination filesystem (for example APFS
+on macOS or ext4 on Linux); unsupported filesystems fail with a clear error and
+**no overwrite/copy fallback**. Staging beside the destination avoids cross-device
+links. Failure cleanup removes only the private staging file/directory, never the
+public destination; if the OS refuses staging cleanup, a private staging artifact
+may remain. This protects against concurrent writers to the output pathname, not
+arbitrary hostile code with the same UID or replacement of trusted parent directories.
 The successful receipt is `{output,bytes}`. Exported OPML may contain authenticated
 URLs: keep the file private. Its contents are never printed.
 
