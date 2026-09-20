@@ -40,9 +40,11 @@ records Miniflux 2.3.0–2.3.3 compatibility, the 2.3.2+ ID endpoint and intenti
 - User mutations use explicit verbs, no prompts or automatic retries. Update payloads contain
   only supplied fields (`--flag=false` is distinct from omission); JSON input is allowlisted
   against public request models. Current-account mark-read resolves `/me`, never takes a user
-  ID. OPML files use explicit paths and JSON receipts; exports use exclusive mode-0600 creation,
-  never overwrite, and clean up on failure. `fetch-update` is the explicit persisting variant
-  of `fetch`; its mutation-bearing GET uses a non-reusing transport to prevent replay.
+  ID. OPML files use explicit paths and JSON receipts; exports stage mode-0600 data in a private
+  mode-0700 sibling directory, then atomically publish via a no-clobber hard link. Cleanup only
+  removes staging, never the public destination (not even after an identity check). Filesystems
+  without hard-link support fail closed; see `docs/user-api.md`. `fetch-update` is the explicit
+  persisting variant of `fetch`; its mutation-bearing GET uses a non-reusing transport to prevent replay.
 - **The envelope is Miniflux's; only the objects inside are trimmed.** Feeds and categories are
   bare arrays, entries are `{"total", "entries"}`. A trimmed entry keeps id, title, url, author,
   timestamps, status, starred, reading time, and `feed`/`category` as `{id, title}`; the raw one

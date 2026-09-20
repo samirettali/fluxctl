@@ -73,7 +73,7 @@ Flags work before or after IDs. Only supplied update fields are sent; use `--fla
 
 **Mutations are explicit and do not prompt or retry.** Deleting a feed/category also deletes its entries/subscriptions. `entry flush-history` asynchronously and permanently removes read, non-starred, non-shared articles. `entry mark-all-read` affects only the current account; it accepts no user ID. Plain `entry fetch` stays read-only; `fetch-update` explicitly persists content. Imports can have partial effects if the server fails; inspect before retrying.
 
-OPML uses explicit file paths and JSON receipts, never XML stdout. Export creates a new mode-0600 file and refuses to overwrite files or symlinks. OPML can contain subscription credentials; its contents and sensitive API error bodies are never printed.
+OPML uses explicit file paths and JSON receipts, never XML stdout. Export stages mode-0600 data in a private directory, then atomically publishes without overwriting files or symlinks. The destination filesystem must support hard links; unsupported filesystems fail closed. Cleanup never removes the public destination. OPML can contain subscription credentials; its contents and sensitive API error bodies are never printed.
 
 `entry list` also accepts repeated `--tag`, `--globally-visible`, `--before-id`, `--after-id` and `--starred=false`. `server version` queries Miniflux; `version` remains local.
 
