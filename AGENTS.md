@@ -25,11 +25,24 @@ input on this repository, the way `spotify` is.
 
 ## Status
 
-Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category management
-(create, move, delete, refresh, OPML) is deliberately left for later.
+User-facing API coverage includes subscriptions/categories, article editing/import/history,
+current-account bulk read, OPML, icons and enclosure playback state. No user CRUD, API-key
+management or server settings. [Versioned coverage matrix and command contracts](docs/user-api.md)
+records Miniflux 2.3.0–2.3.3 compatibility, the 2.3.2+ ID endpoint and intentional exclusions.
 
 ## Conventions
 
+- **Subscription secrets are always redacted, including `--full` and nested feed objects.**
+  Sanitization happens in the JSON client before trimming. Password/cookie fields and feed
+  integration URLs are hidden; proxy URL credentials/query/fragment and URL userinfo are
+  removed. Credential-bearing feed input is file-only (`--input`), never secret flags.
+  Sensitive subscription/OPML error bodies are suppressed without losing status/auth remedy.
+- User mutations use explicit verbs, no prompts or automatic retries. Update payloads contain
+  only supplied fields (`--flag=false` is distinct from omission); JSON input is allowlisted
+  against public request models. Current-account mark-read resolves `/me`, never takes a user
+  ID. OPML files use explicit paths and JSON receipts; exports use exclusive mode-0600 creation,
+  never overwrite, and clean up on failure. `fetch-update` is the explicit persisting variant
+  of `fetch`; its mutation-bearing GET uses a non-reusing transport to prevent replay.
 - **The envelope is Miniflux's; only the objects inside are trimmed.** Feeds and categories are
   bare arrays, entries are `{"total", "entries"}`. A trimmed entry keeps id, title, url, author,
   timestamps, status, starred, reading time, and `feed`/`category` as `{id, title}`; the raw one
@@ -94,7 +107,8 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
 - A mutation's 2xx with an empty body (204 on status updates, 202 on save) is a success with
   nil data. GETs require a nonempty JSON response. Trimmed objects validate essential IDs
   and envelopes; fetch requires a string content field, including an empty string. `--full`
-  remains raw JSON rather than enforcing the trimmed schema.
+  retains the raw JSON schema rather than enforcing the trimmed schema, but subscription
+  credentials are always redacted.
 - Non-JSON error bodies (a proxy's 502 page) are kept in `details` truncated to 300 characters.
   Error-body reads are bounded to 16 KiB and a broken body does not hide an HTTP error status
   or 401 remedy. Successful bodies stay uncapped to preserve `--limit 0`.
