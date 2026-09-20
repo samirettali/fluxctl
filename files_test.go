@@ -191,6 +191,66 @@ func TestOPMLLocalFileSafety(t *testing.T) {
 	})
 }
 
+// R2: a failed export owns the inode it reserved, not any later replacement
+// installed at the same pathname. A symlink to the moved inode is not ours either.
+func TestOPMLFailureKeepsConcurrentReplacement(t *testing.T) {
+	for _, replacement := range []string{"file", "symlink", "directory"} {
+		t.Run(replacement, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "export.opml")
+			moved := path + ".moved"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := os.Rename(path, moved); err != nil {
+					t.Errorf("move reservation: %v", err)
+					http.Error(w, "move failed", 500)
+					return
+				}
+				var err error
+				switch replacement {
+				case "file":
+					err = os.WriteFile(path, []byte("keep me"), 0600)
+				case "symlink":
+					err = os.Symlink(moved, path)
+				case "directory":
+					err = os.Mkdir(path, 0700)
+				}
+				if err != nil {
+					t.Errorf("replace reservation: %v", err)
+				}
+				http.Error(w, "export failed", 500)
+			}))
+			defer server.Close()
+			t.Setenv("MINIFLUX_URL", server.URL)
+			t.Setenv("MINIFLUX_API_KEY", "dummy-key")
+			out, err := captureRunner(t, "opml", "export", "--output", path)
+			if err == nil || out != "" {
+				t.Fatalf("expected failed export: %s %v", out, err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatalf("removed replacement: %v", err)
+			}
+			switch replacement {
+			case "file":
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != "keep me" {
+					t.Fatalf("changed replacement: %q %v", data, err)
+				}
+			case "symlink":
+				if target, err := os.Readlink(path); err != nil || target != moved {
+					t.Fatalf("changed symlink: %q %v", target, err)
+				}
+			case "directory":
+				if !info.IsDir() {
+					t.Fatal("changed replacement directory")
+				}
+			}
+			if _, err := os.Stat(moved); err != nil {
+				t.Fatalf("changed moved reservation: %v", err)
+			}
+		})
+	}
+}
+
 func TestOPMLRedirectProtection(t *testing.T) {
 	for _, action := range []string{"import", "export"} {
 		t.Run(action, func(t *testing.T) {

@@ -116,11 +116,20 @@ func runOPML(action string, args []string) error {
 	if err != nil {
 		return errors.New("cannot create output file: use a new path")
 	}
+	created, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return errors.New("cannot identify output file")
+	}
 	complete := false
 	defer func() {
 		f.Close()
 		if !complete {
-			_ = os.Remove(*path)
+			// Another process may have moved our reservation and replaced its
+			// pathname. Never remove that replacement or follow a new symlink.
+			if current, err := os.Lstat(*path); err == nil && os.SameFile(created, current) {
+				_ = os.Remove(*path)
+			}
 		}
 	}()
 	client, err := newMinifluxClient()
