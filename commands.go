@@ -21,6 +21,25 @@ func newFlagSet(name string) *flag.FlagSet {
 // parseFlags accepts flags before and after positional arguments, so `entry get 42 --full`
 // works as well as `entry get --full 42`. The positionals end up in fs.Args() in order.
 func parseFlags(fs *flag.FlagSet, args []string) error {
+	// Locate a real terminator, skipping values of non-boolean flags: in
+	// --search --, the second argument is a value, not a terminator.
+	var trailing []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			trailing, args = args[i+1:], args[:i]
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || strings.Contains(arg, "=") {
+			continue
+		}
+		if f := fs.Lookup(strings.TrimLeft(arg, "-")); f != nil {
+			boolean, ok := f.Value.(interface{ IsBoolFlag() bool })
+			if !ok || !boolean.IsBoolFlag() {
+				i++
+			}
+		}
+	}
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -36,7 +55,8 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 		positional = append(positional, rest[0])
 		args = rest[1:]
 	}
-	return fs.Parse(positional)
+	positional = append(positional, trailing...)
+	return fs.Parse(append([]string{"--"}, positional...))
 }
 
 // errHelp is returned when a subcommand gets -h/--help; main prints the usage and exits 0.
@@ -142,6 +162,9 @@ func runFeed(args []string) error {
 		if err := noArgs(fs); err != nil {
 			return err
 		}
+		if *categoryID < 0 {
+			return errors.New("feed list: --category must be >= 0")
+		}
 		client, err := newMinifluxClient()
 		if err != nil {
 			return err
@@ -240,11 +263,14 @@ func parseDuration(value string) (time.Duration, error) {
 		if err != nil || n < 0 {
 			return 0, fmt.Errorf("invalid duration %q", value)
 		}
-		days := n
+		unit := 24 * time.Hour
 		if strings.HasSuffix(value, "w") {
-			days *= 7
+			unit *= 7
 		}
-		return time.Duration(days) * 24 * time.Hour, nil
+		if uint64(n) > uint64(1<<63-1)/uint64(unit) {
+			return 0, fmt.Errorf("invalid duration %q: out of range", value)
+		}
+		return time.Duration(n) * unit, nil
 	}
 	d, err := time.ParseDuration(value)
 	if err != nil || d < 0 {
@@ -284,6 +310,9 @@ func (o entryListOptions) query(now time.Time) (url.Values, error) {
 	if o.direction != "asc" && o.direction != "desc" {
 		return nil, fmt.Errorf("entry list: invalid --direction %q (asc, desc)", o.direction)
 	}
+	if o.feedID < 0 || o.categoryID < 0 {
+		return nil, errors.New("entry list: --feed and --category must be >= 0")
+	}
 	if o.limit < 0 || o.offset < 0 {
 		return nil, errors.New("entry list: --limit and --offset must be >= 0")
 	}
@@ -316,7 +345,10 @@ func (o entryListOptions) query(now time.Time) (url.Values, error) {
 		if err != nil {
 			return nil, fmt.Errorf("entry list %s: %w", f.flag, err)
 		}
-		if ts > 0 {
+		if f.value != "" {
+			if ts <= 0 {
+				return nil, fmt.Errorf("entry list %s: time must be after the Unix epoch", f.flag)
+			}
 			q.Set(f.param, strconv.FormatInt(ts, 10))
 		}
 	}
@@ -471,16 +503,20 @@ func runEntryFetch(args []string) error {
 		return err
 	}
 	var body struct {
-		Content     string `json:"content"`
-		ReadingTime int    `json:"reading_time"`
+		Content     *string `json:"content"`
+		ReadingTime int     `json:"reading_time"`
 	}
 	if err := decodeInto(data, &body, "fetched content"); err != nil {
 		return err
 	}
-	if !*asHTML {
-		body.Content = htmlToText(body.Content)
+	if body.Content == nil {
+		return errors.New("decoding fetched content: missing or null content")
 	}
-	return writeJSON(map[string]any{"id": ids[0], "content": body.Content, "reading_time": body.ReadingTime})
+	content := *body.Content
+	if !*asHTML {
+		content = htmlToText(content)
+	}
+	return writeJSON(map[string]any{"id": ids[0], "content": content, "reading_time": body.ReadingTime})
 }
 
 // runEntryStatus is one request for every ID. Miniflux updates by `id = ANY(...)` without
@@ -557,13 +593,17 @@ func starEntries(client *minifluxClient, star bool, ids []int64) (starResult, er
 			continue
 		}
 		var current struct {
-			Starred bool `json:"starred"`
+			Starred *bool `json:"starred"`
 		}
-		if err := decodeInto(data, &current, "entry"); err != nil {
+		err = decodeInto(data, &current, "entry")
+		if err == nil && current.Starred == nil {
+			err = errors.New("decoding entry: missing or null starred state")
+		}
+		if err != nil {
 			result.Failed = append(result.Failed, failedEntry{ID: id, Error: err.Error()})
 			continue
 		}
-		if current.Starred == star {
+		if *current.Starred == star {
 			result.Skipped = append(result.Skipped, id)
 			continue
 		}

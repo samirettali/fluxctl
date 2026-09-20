@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -53,7 +54,7 @@ type rawEntry struct {
 }
 
 type rawEntries struct {
-	Total   int        `json:"total"`
+	Total   *int       `json:"total"`
 	Entries []rawEntry `json:"entries"`
 }
 
@@ -153,6 +154,14 @@ func decodeCategories(data json.RawMessage) ([]category, error) {
 	if err := json.Unmarshal(data, &categories); err != nil {
 		return nil, fmt.Errorf("decoding categories: %w", err)
 	}
+	if categories == nil {
+		return nil, fmt.Errorf("decoding categories: expected an array")
+	}
+	for _, c := range categories {
+		if c.ID <= 0 {
+			return nil, fmt.Errorf("decoding category: missing or invalid ID")
+		}
+	}
 	return categories, nil
 }
 
@@ -161,8 +170,14 @@ func decodeFeeds(data json.RawMessage) ([]feed, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decoding feeds: %w", err)
 	}
+	if raw == nil {
+		return nil, fmt.Errorf("decoding feeds: expected an array")
+	}
 	out := make([]feed, 0, len(raw))
 	for _, f := range raw {
+		if f.ID <= 0 {
+			return nil, fmt.Errorf("decoding feed: missing or invalid ID")
+		}
 		out = append(out, trimFeed(f))
 	}
 	return out, nil
@@ -170,19 +185,28 @@ func decodeFeeds(data json.RawMessage) ([]feed, error) {
 
 func decodeFeed(data json.RawMessage) (feed, error) {
 	var raw rawFeed
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return feed{}, fmt.Errorf("decoding feed: %w", err)
+	if err := decodeInto(data, &raw, "feed"); err != nil {
+		return feed{}, err
+	}
+	if raw.ID <= 0 {
+		return feed{}, fmt.Errorf("decoding feed: missing or invalid ID")
 	}
 	return trimFeed(raw), nil
 }
 
 func decodeEntries(data json.RawMessage, contentMode string) (entries, error) {
 	var raw rawEntries
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return entries{}, fmt.Errorf("decoding entries: %w", err)
+	if err := decodeInto(data, &raw, "entries"); err != nil {
+		return entries{}, err
 	}
-	out := entries{Total: raw.Total, Entries: make([]entry, 0, len(raw.Entries))}
+	if raw.Total == nil || *raw.Total < 0 || raw.Entries == nil {
+		return entries{}, fmt.Errorf("decoding entries: expected a non-negative total and an entries array")
+	}
+	out := entries{Total: *raw.Total, Entries: make([]entry, 0, len(raw.Entries))}
 	for _, e := range raw.Entries {
+		if e.ID <= 0 {
+			return entries{}, fmt.Errorf("decoding entry: missing or invalid ID")
+		}
 		out.Entries = append(out.Entries, trimEntry(e, contentMode))
 	}
 	return out, nil
@@ -190,13 +214,19 @@ func decodeEntries(data json.RawMessage, contentMode string) (entries, error) {
 
 func decodeEntry(data json.RawMessage, contentMode string) (entry, error) {
 	var raw rawEntry
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return entry{}, fmt.Errorf("decoding entry: %w", err)
+	if err := decodeInto(data, &raw, "entry"); err != nil {
+		return entry{}, err
+	}
+	if raw.ID <= 0 {
+		return entry{}, fmt.Errorf("decoding entry: missing or invalid ID")
 	}
 	return trimEntry(raw, contentMode), nil
 }
 
 func decodeInto(data json.RawMessage, target any, what string) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("decoding %s: expected an object, got null", what)
+	}
 	if err := json.Unmarshal(data, target); err != nil {
 		return fmt.Errorf("decoding %s: %w", what, err)
 	}

@@ -55,6 +55,8 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
   yesterday" means; on `--status all` a recently read old entry also matches, and the skill
   says so. `--published-since`/`--published-until` expose `published_after`/`published_before`
   for when the publication date is the point. All four accept `24h`, `7d`, `2w` or RFC 3339.
+  Resolved timestamps must be after the Unix epoch: Miniflux 2.3.0 ignores timestamps <= 0
+  (`internal/api/entry_handlers.go`), so accepting them would silently drop the filter.
 - `entry list` defaults to `--status unread`, `--order published_at --direction desc`,
   `--limit 50`. `--status all` drops the filter. **`limit` is always sent**: Miniflux defaults
   to 100 when it is absent and treats an explicit `0` as no cap, so `--limit 0` is "everything"
@@ -67,7 +69,8 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
   `miniflux-api-key` as the fallback** (password = key, first URI = base URL). The fallback is
   what makes a bare binary in `~/.local/bin` work from an agent today; the dotfiles wrapper will
   set the variables later and the fallback goes idle. It never prompts: a locked vault is an
-  error whose `fix` says to unlock it, since pinentry has no terminal from an agent.
+  error whose `fix` says to unlock it, since pinentry has no terminal from an agent. The two
+  vault commands share a 10-second deadline, with a one-second pipe-wait bound.
 - **Errors carry their own remedy.** Missing configuration and a 401 both render as
   `{"error", "fix", "details"}`, so no caller needs a status check first. `authError` wraps the
   `APIError`, so `errors.As` still reaches the status code.
@@ -87,12 +90,23 @@ Scope for now is reading plus `read|unread|star|unstar|save`. Feed and category 
   in a goroutine**, so `saved` means accepted; a failure on the integration side never surfaces.
 - Flags may come before or after positional arguments (`parseFlags` re-parses after each
   positional), because agents write `entry get 42 --full` as often as the other way round.
-- A 2xx with an empty body (204 on status updates, 202 on save) is a success with nil data.
+  `--` ends flag parsing, except when consumed as a string flag's value.
+- A mutation's 2xx with an empty body (204 on status updates, 202 on save) is a success with
+  nil data. GETs require a nonempty JSON response. Trimmed objects validate essential IDs
+  and envelopes; fetch requires a string content field, including an empty string. `--full`
+  remains raw JSON rather than enforcing the trimmed schema.
 - Non-JSON error bodies (a proxy's 502 page) are kept in `details` truncated to 300 characters.
-- `-h`/`--help`/`help` on a group (`entry --help`) or a leaf (`entry list -h`) prints the usage
-  to stderr and exits 0 (`errHelp`). Every command rejects stray positionals, so a mistyped
-  flag cannot pass silently.
-- `MINIFLUX_URL` must be `http(s)://host`; `url.ParseRequestURI` accepted `localhost:8080` and
-  the failure then surfaced as a transport error without a `fix`.
+  Error-body reads are bounded to 16 KiB and a broken body does not hide an HTTP error status
+  or 401 remedy. Successful bodies stay uncapped to preserve `--limit 0`.
+- `-h`/`--help` on a group (`entry --help`) or a leaf (`entry list -h`) prints the usage
+  to stderr and exits 0 (`errHelp`); groups also accept `help`. Commands other than help
+  reject stray positionals, so a mistyped flag cannot pass silently.
+- `MINIFLUX_URL` must be `http(s)://host[/path]`, without userinfo, query or fragment;
+  `url.ParseRequestURI` accepted `localhost:8080` and the failure then surfaced as a transport
+  error without a `fix`. Invalid URLs are not echoed because they can contain credentials.
+- Redirects must retain the scheme, host (including port) and method, without URL credentials,
+  up to ten hops. Same-origin GET and body-preserving 307/308 redirects remain supported.
+  Go copies `X-Auth-Token` across origins by default and includes raw Location URLs in redirect
+  errors, so both following and reporting redirects need explicit safeguards.
 - The tag stripper understands quoted attributes, so a `>` inside `title="a>b"` does not leak
   text. Nested `<svg>` inside `<svg>` still leaves a tail; not worth a parser.

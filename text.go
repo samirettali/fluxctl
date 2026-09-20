@@ -6,15 +6,19 @@ import (
 	"strings"
 )
 
+// Attribute values may contain >; every tag matcher must respect quotes, not just
+// the final stripper, or block/line replacements can leave attribute text behind.
+const tagAttributes = `(?:[^>"']|"[^"]*"|'[^']*')*`
+
 var (
 	// selfClosing goes first: a lazy `<svg\b.*?</svg>` would otherwise start at `<svg .../>`
 	// and swallow everything up to the next real `</svg>`.
-	selfClosing = regexp.MustCompile(`(?is)<(script|style|noscript|svg|template)\b[^>]*/>`)
+	selfClosing = regexp.MustCompile(`(?is)<(script|style|noscript|svg|template)\b` + tagAttributes + `/\s*>`)
 	dropBlocks  = regexp.MustCompile(`(?is)<script\b.*?</script\s*>|<style\b.*?</style\s*>|<noscript\b.*?</noscript\s*>|<svg\b.*?</svg\s*>|<template\b.*?</template\s*>`)
-	paragraphs  = regexp.MustCompile(`(?i)</?(p|div|ul|ol|dl|h[1-6]|blockquote|pre|table|section|article|header|footer|figure|figcaption|hr)\b[^>]*>`)
-	lineBreaks  = regexp.MustCompile(`(?i)<br\b[^>]*>|</(li|tr|dt|dd)\s*>`)
+	paragraphs  = regexp.MustCompile(`(?i)</?(p|div|ul|ol|dl|h[1-6]|blockquote|pre|table|section|article|header|footer|figure|figcaption|hr)\b` + tagAttributes + `>`)
+	lineBreaks  = regexp.MustCompile(`(?i)<br\b` + tagAttributes + `>|</(li|tr|dt|dd)\s*>`)
 	cellBreaks  = regexp.MustCompile(`(?i)</(td|th)\s*>`)
-	anyTag      = regexp.MustCompile(`(?s)<(?:[^>"']|"[^"]*"|'[^']*')*>`)
+	anyTag      = regexp.MustCompile(`(?s)<` + tagAttributes + `>`)
 	sourceSpace = regexp.MustCompile(`[\s\x{00a0}]+`)
 	tabs        = regexp.MustCompile(` *\t *`)
 	runs        = regexp.MustCompile(` {2,}`)
