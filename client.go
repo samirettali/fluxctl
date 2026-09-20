@@ -229,11 +229,15 @@ func (client *minifluxClient) requestBytes(method, path string, query url.Values
 	}
 	resp, err := client.http.Do(req)
 	if err != nil {
-		// net/http embeds the raw Location in url.Error on redirect rejection,
-		// including any URL password. Report only our safe policy error.
+		// net/http includes the request URL even when an accepted same-origin
+		// redirect later fails in transport. That URL can contain credentials
+		// echoed by the server. Retain the safe cause, never the URL wrapper.
 		var redirectErr redirectError
+		var urlErr *url.Error
 		if errors.As(err, &redirectErr) {
 			err = redirectErr
+		} else if errors.As(err, &urlErr) {
+			err = urlErr.Err
 		}
 		return nil, fmt.Errorf("calling miniflux: %w", err)
 	}

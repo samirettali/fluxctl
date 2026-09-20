@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -118,6 +121,61 @@ func TestSensitiveInputErrorsAndSuccess(t *testing.T) {
 			}
 			if calls != 1 {
 				t.Fatalf("replayed mutation: %d", calls)
+			}
+		})
+	}
+}
+
+// R1: an allowed redirect can echo credentials in its path and fail only after
+// net/http has accepted it. Both JSON and OPML must strip url.Error's URL.
+func TestAcceptedRedirectTransportFailureDoesNotLeakCLI(t *testing.T) {
+	binary := buildUserCLI(t)
+	for _, operation := range []string{"feed create", "opml import", "opml export"} {
+		t.Run(operation, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if strings.HasPrefix(r.URL.Path, "/v1/") {
+					w.Header().Set("Location", "/redirect/dummy-password-secret/dummy-opml-secret")
+					w.WriteHeader(http.StatusTemporaryRedirect)
+					return
+				}
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = connection.Close()
+			}))
+			defer server.Close()
+			t.Setenv("MINIFLUX_URL", server.URL)
+			t.Setenv("MINIFLUX_API_KEY", "dummy-key")
+			var args []string
+			output := filepath.Join(t.TempDir(), "export.opml")
+			switch operation {
+			case "feed create":
+				args = []string{"feed", "create", "--input", inputFile(t, `{"feed_url":"https://example.com/rss","password":"dummy-password-secret"}`)}
+			case "opml import":
+				args = []string{"opml", "import", "--input", inputFile(t, testOPML)}
+			case "opml export":
+				args = []string{"opml", "export", "--output", output}
+			}
+			stdout, stderr, exit := invokeUserCLI(t, binary, args...)
+			assertNoDummySecrets(t, stdout+stderr)
+			if strings.Contains(stderr, "dummy-opml-secret") || strings.Contains(stderr, server.URL) {
+				t.Fatalf("redirect URL leaked: %s", stderr)
+			}
+			var result map[string]string
+			if exit != 1 || stdout != "" || json.Unmarshal([]byte(stderr), &result) != nil || !strings.HasPrefix(result["error"], "calling miniflux: ") {
+				t.Fatalf("lost safe transport failure: exit=%d stdout=%s stderr=%s", exit, stdout, stderr)
+			}
+			if calls.Load() < 2 || (operation != "opml export" && calls.Load() != 2) {
+				t.Fatalf("unexpected request count: %d", calls.Load())
+			}
+			if operation == "opml export" {
+				if _, err := os.Lstat(output); !os.IsNotExist(err) {
+					t.Fatalf("failed export retained output: %v", err)
+				}
 			}
 		})
 	}
